@@ -359,6 +359,8 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
     result_arg: Optional[str] = "generated_text"
     "Set result_arg to None if output of the model is expected to be a string."
     "Otherwise, if it's a dict, provided an argument that contains the result."
+    strip_prefix: bool = False
+    "Whether to strip the prompt from the generated text."
 
     @root_validator()
     def validate_environment(cls, values: Dict) -> Dict:
@@ -429,25 +431,79 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
     def _generate(
         self,
         prompts: List[str],
-        stop: Optional[List[str]] = None,
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> LLMResult:
         """Run the LLM on the given prompt and input."""
         instances = self._prepare_request(prompts, **kwargs)
         response = self.client.predict(endpoint=self.endpoint_path, instances=instances)
-        return self._parse_response(response)
+        return self._parse_response(
+            prompts,
+            response,
+            run_manager=run_manager,
+            **kwargs,
+        )
 
-    def _parse_response(self, predictions: "Prediction") -> LLMResult:
-        generations: List[List[Generation]] = []
-        for result in predictions.predictions:
-            generations.append(
-                [
-                    Generation(text=self._parse_prediction(prediction))
-                    for prediction in result
-                ]
+    def _parse_response(
+        self,
+        prompts: List[str],
+        predictions: "Prediction",
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> List[List[GenerationChunk]]:
+        generations: List[List[GenerationChunk]] = []
+        for prompt, result in zip(prompts, predictions.predictions):
+            chunks = [
+                GenerationChunk(text=self._parse_prediction(prediction))
+                for prediction in result
+            ]
+            chunks = self._aggregate_response(
+                prompt,
+                chunks,
+                run_manager=run_manager,
+                verbose=self.verbose,
+                **kwargs,
             )
+            generations.append([chunks])
         return LLMResult(generations=generations)
+
+    def _aggregate_response(
+        self,
+        prompt: str,
+        chunks: List[Generation],
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        verbose: bool = False,
+        **kwargs: Any,
+    ) -> GenerationChunk:
+        final_chunk: Optional[GenerationChunk] = None
+        if self.strip_prefix:
+            chunks = self._strip_generation_context(prompt, chunks)
+        for chunk in chunks:
+          if final_chunk is None:
+              final_chunk = chunk
+          else:
+              final_chunk += chunk
+          if run_manager:
+              run_manager.on_llm_new_token(
+                  chunk.text,
+                  verbose=verbose,
+              )
+        if final_chunk is None:
+            raise ValueError("Malformed response from VertexAIModelGarden")
+        return final_chunk
+
+    def _strip_generation_context(
+        self,
+        prompt: str,
+        chunks: List[GenerationChunk],
+    ) -> List[GenerationChunk]:
+        context = self._format_generation_context(prompt, chunks)
+        stripped_chunks = chunks[len(context):]
+        return stripped_chunks if stripped_chunks == context else chunks
+
+    def _format_generation_context(self, prompt: str    ) -> List[GenerationChunk]:
+        prefix = [*"\n".join(["Prompt:", prompt, "Output:", ""])]
+        return list(map(lambda x: GenerationChunk(text=x), prefix))
 
     def _parse_prediction(self, prediction: Any) -> str:
         if isinstance(prediction, str):
@@ -474,7 +530,6 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
     async def _agenerate(
         self,
         prompts: List[str],
-        stop: Optional[List[str]] = None,
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> LLMResult:
@@ -483,4 +538,9 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
         response = await self.async_client.predict(
             endpoint=self.endpoint_path, instances=instances
         )
-        return self._parse_response(response)
+        return self._parse_response(
+            prompts,
+            response,
+            run_manager=run_manager,
+            **kwargs,
+        )
