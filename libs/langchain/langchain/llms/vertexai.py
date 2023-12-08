@@ -447,7 +447,7 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
         )
 
     def _parse_response(self, predictions: "Prediction") -> LLMResult:
-        generations: List[List[Generation]] = []
+        generations: List[List[GenerationChunk]] = []
         for result in predictions.predictions:
             generations.append(
                 [
