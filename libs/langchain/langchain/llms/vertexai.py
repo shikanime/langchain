@@ -359,6 +359,8 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
     result_arg: Optional[str] = "generated_text"
     "Set result_arg to None if output of the model is expected to be a string."
     "Otherwise, if it's a dict, provided an argument that contains the result."
+    strip_prefix: bool = False
+    "Whether to strip the prompt from the generated text."
 
     @root_validator()
     def validate_environment(cls, values: Dict) -> Dict:
@@ -436,7 +438,13 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
         """Run the LLM on the given prompt and input."""
         instances = self._prepare_request(prompts, **kwargs)
         response = self.client.predict(endpoint=self.endpoint_path, instances=instances)
-        return self._parse_response(response)
+        return self._normalize_response(
+            prompts,
+            self._parse_response(response),
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs
+        )
 
     def _parse_response(self, predictions: "Prediction") -> LLMResult:
         generations: List[List[Generation]] = []
@@ -448,6 +456,78 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
                 ]
             )
         return LLMResult(generations=generations)
+
+    def _normalize_response(
+        self,
+        prompts: List[str],
+        generations: List[List[Generation]],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ):
+        generations = [
+            self._normalize_with_aggregation(
+                prompt,
+                generation,
+                stop=stop,
+                run_manager=run_manager,
+                verbose=self.verbose,
+                **kwargs,
+            )
+            for prompt, generation in zip(prompts, generations)
+        ]
+        return LLMResult(generations=generations)
+
+    def _normalize_with_aggregation(
+        self,
+        prompt: str,
+        chunks: List[Generation],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        verbose: bool = False,
+        **kwargs: Any,
+    ) -> GenerationChunk:
+        final_chunk: Optional[GenerationChunk] = None
+        if self.strip_prefix:
+            chunks = self._strip_generation_context(prompt, chunks)
+        for chunk in self._normalize_generation(chunks):
+          if final_chunk is None:
+              final_chunk = chunk
+          else:
+              final_chunk += chunk
+          if run_manager:
+              run_manager.on_llm_new_token(
+                  chunk.text,
+                  verbose=verbose,
+              )
+        if final_chunk is None:
+            raise ValueError("Malformed response from VertexAIModelGarden")
+        return final_chunk
+
+    def _normalize_generation(
+        self, chunks: List[Generation],
+    ) -> Iterator[GenerationChunk]:
+        return map(
+            lambda x: GenerationChunk(text=x.text, generation_info=x.generation_info),
+            chunks
+        )
+
+    def _strip_generation_context(
+        self,
+        prompt: str,
+        chunks: List[GenerationChunk],
+    ) -> List[GenerationChunk]:
+        context = self._format_generation_context(prompt, chunks)
+        stripped_chunks = chunks[len(context):]
+        return stripped_chunks if stripped_chunks == context else chunks
+
+    def _format_generation_context(
+        self,
+        prompt: str,
+        chunks: List[GenerationChunk],
+    ) -> List[GenerationChunk]:
+        prefix = [*"\n".join(["Prompt:", prompt, "Output:", ""])]
+        return list(map(lambda x: GenerationChunk(text=x), prefix))
 
     def _parse_prediction(self, prediction: Any) -> str:
         if isinstance(prediction, str):
@@ -483,4 +563,9 @@ class VertexAIModelGarden(_VertexAIBase, BaseLLM):
         response = await self.async_client.predict(
             endpoint=self.endpoint_path, instances=instances
         )
-        return self._parse_response(response)
+        return self._normalize_response(
+            prompts,
+            self._parse_response(response),
+            stop=stop,
+            run_manager=run_manager,
+        )
