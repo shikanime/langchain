@@ -27,6 +27,7 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.pydantic_v1 import root_validator
+from vertexai.preview.generative_models import ResponseBlockedError
 
 from langchain_community.llms.vertexai import (
     _VertexAICommon,
@@ -289,17 +290,21 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             history_gemini = _parse_chat_history_gemini(messages, project=self.project)
             message = history_gemini.pop()
             chat = self.client.start_chat(history=history_gemini)
-            response = chat.send_message(message, generation_config=params)
+            try:
+                responses = [chat.send_message(message, generation_config=params)]
+            except ResponseBlockedError as e:
+                responses = e.responses
         else:
             history = _parse_chat_history(messages[:-1])
             examples = kwargs.get("examples") or self.examples
             if examples:
                 params["examples"] = _parse_examples(examples)
             chat = self._start_chat(history, **params)
-            response = chat.send_message(question.content, **msg_params)
+            responses = [chat.send_message(question.content, **msg_params)]
         generations = [
-            ChatGeneration(message=AIMessage(content=r.text))
-            for r in response.candidates
+            ChatGeneration(message=AIMessage(content=c.text))
+            for r in responses
+            for c in r.candidates
         ]
         return ChatResult(generations=generations)
 
@@ -337,7 +342,12 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             history_gemini = _parse_chat_history_gemini(messages, project=self.project)
             message = history_gemini.pop()
             chat = self.client.start_chat(history=history_gemini)
-            response = await chat.send_message_async(message, generation_config=params)
+            try:
+                responses = [
+                    await chat.send_message_async(message, generation_config=params)
+                ]
+            except ResponseBlockedError as e:
+                responses = e.responses
         else:
             question = _get_question(messages)
             history = _parse_chat_history(messages[:-1])
@@ -345,11 +355,12 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             if examples:
                 params["examples"] = _parse_examples(examples)
             chat = self._start_chat(history, **params)
-            response = await chat.send_message_async(question.content, **msg_params)
+            responses = [await chat.send_message_async(question.content, **msg_params)]
 
         generations = [
-            ChatGeneration(message=AIMessage(content=r.text))
-            for r in response.candidates
+            ChatGeneration(message=AIMessage(content=c.text))
+            for r in responses
+            for c in r.candidates
         ]
         return ChatResult(generations=generations)
 
