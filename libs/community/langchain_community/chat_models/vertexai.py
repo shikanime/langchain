@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union, ca
 from urllib.parse import urlparse
 
 import requests
+from google.cloud.aiplatform_v1beta1.types import (
+    content as gapic_content_types,
+)
 from langchain_core._api.deprecation import deprecated
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
@@ -27,6 +30,7 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.pydantic_v1 import root_validator
+from vertexai.preview.generative_models import ResponseBlockedError
 
 from langchain_community.llms.vertexai import (
     _VertexAICommon,
@@ -215,6 +219,8 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
     model_name: str = "chat-bison"
     "Underlying model name."
     examples: Optional[List[BaseMessage]] = None
+    """Whether or not to error if bad content was found."""
+    error: bool = False
 
     @classmethod
     def is_lc_serializable(self) -> bool:
@@ -289,7 +295,10 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             history_gemini = _parse_chat_history_gemini(messages, project=self.project)
             message = history_gemini.pop()
             chat = self.client.start_chat(history=history_gemini)
-            response = chat.send_message(message, generation_config=params)
+            try:
+                response = chat.send_message(message, generation_config=params)
+            except ResponseBlockedError as e:
+                response = e.responses[0]
         else:
             history = _parse_chat_history(messages[:-1])
             examples = kwargs.get("examples") or self.examples
@@ -297,10 +306,21 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
                 params["examples"] = _parse_examples(examples)
             chat = self._start_chat(history, **params)
             response = chat.send_message(question.content, **msg_params)
-        generations = [
-            ChatGeneration(message=AIMessage(content=r.text))
-            for r in response.candidates
-        ]
+        generations = []
+        for c in response.candidates:
+            if c.finish_reason in [
+                gapic_content_types.Candidate.FinishReason.STOP,
+                gapic_content_types.Candidate.FinishReason.FINISH_REASON_UNSPECIFIED,
+            ]:
+                generations.append(ChatGeneration(message=AIMessage(content=c.text)))
+            else:
+                error_str = "Text was found that violates the safety policy"
+                if self.error:
+                    raise ValueError(error_str)
+                else:
+                    generations.append(
+                        ChatGeneration(message=AIMessage(content=error_str))
+                    )
         return ChatResult(generations=generations)
 
     async def _agenerate(
@@ -337,7 +357,12 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             history_gemini = _parse_chat_history_gemini(messages, project=self.project)
             message = history_gemini.pop()
             chat = self.client.start_chat(history=history_gemini)
-            response = await chat.send_message_async(message, generation_config=params)
+            try:
+                response = await chat.send_message_async(
+                    message, generation_config=params
+                )
+            except ResponseBlockedError as e:
+                response = e.responses[0]
         else:
             question = _get_question(messages)
             history = _parse_chat_history(messages[:-1])
@@ -347,10 +372,21 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             chat = self._start_chat(history, **params)
             response = await chat.send_message_async(question.content, **msg_params)
 
-        generations = [
-            ChatGeneration(message=AIMessage(content=r.text))
-            for r in response.candidates
-        ]
+        generations = []
+        for c in response.candidates:
+            if c.finish_reason in [
+                gapic_content_types.Candidate.FinishReason.STOP,
+                gapic_content_types.Candidate.FinishReason.FINISH_REASON_UNSPECIFIED,
+            ]:
+                generations.append(ChatGeneration(message=AIMessage(content=c.text)))
+            else:
+                error_str = "Text was found that violates the safety policy"
+                if self.error:
+                    raise ValueError(error_str)
+                else:
+                    generations.append(
+                        ChatGeneration(message=AIMessage(content=error_str))
+                    )
         return ChatResult(generations=generations)
 
     def _stream(
