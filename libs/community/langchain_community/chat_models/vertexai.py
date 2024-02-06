@@ -124,11 +124,10 @@ def _parse_chat_history_gemini(
                 image = load_image_from_gcs(path=path, project=project)
             elif path.startswith("data:image/"):
                 # extract base64 component from image uri
-                try:
-                    encoded = re.search(r"data:image/\w{2,4};base64,(.*)", path).group(
-                        1
-                    )
-                except AttributeError:
+                encoded: Any = re.search(r"data:image/\w{2,4};base64,(.*)", path)
+                if encoded:
+                    encoded = encoded.group(1)
+                else:
                     raise ValueError(
                         "Invalid image uri. It should be in the format "
                         "data:image/<image_type>;base64,<base64_encoded_image>."
@@ -278,6 +277,11 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         Raises:
             ValueError: if the last message in the list is not from human.
         """
+        from google.cloud.aiplatform_v1beta1.types import (
+            content as gapic_content_types,
+        )
+        from vertexai.preview.generative_models import ResponseBlockedError
+
         should_stream = stream if stream is not None else self.streaming
         if should_stream:
             stream_iter = self._stream(
@@ -344,6 +348,11 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         Raises:
             ValueError: if the last message in the list is not from human.
         """
+        from google.cloud.aiplatform_v1beta1.types import (
+            content as gapic_content_types,
+        )
+        from vertexai.preview.generative_models import ResponseBlockedError
+
         if "stream" in kwargs:
             kwargs.pop("stream")
             logger.warning("ChatVertexAI does not currently support async streaming.")
