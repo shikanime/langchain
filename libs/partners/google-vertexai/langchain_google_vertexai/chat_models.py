@@ -166,7 +166,7 @@ def _parse_chat_history_gemini(
         ):
             raise ValueError(
                 """SystemMessages are not yet supported!
-                
+
 To automatically convert the leading SystemMessage to a HumanMessage,
 set  `convert_system_message_to_human` to True. Example:
 
@@ -289,9 +289,11 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
     examples: Optional[List[BaseMessage]] = None
     convert_system_message_to_human: bool = False
     """Whether to merge any leading SystemMessage into the following HumanMessage.
-    
-    Gemini does not support system messages; any unsupported messages will 
+
+    Gemini does not support system messages; any unsupported messages will
     raise an error."""
+    raise_on_blocked: bool = False
+    """Whether or not to error if bad content was found."""
 
     @classmethod
     def is_lc_serializable(self) -> bool:
@@ -347,6 +349,11 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         Raises:
             ValueError: if the last message in the list is not from human.
         """
+        from google.cloud.aiplatform_v1beta1.types import (
+            content as gapic_content_types,
+        )
+        from vertexai.preview.generative_models import ResponseBlockedError
+
         should_stream = stream if stream is not None else self.streaming
         safety_settings = kwargs.pop("safety_settings", None)
         if should_stream:
@@ -372,19 +379,36 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             # set param to `functions` until core tool/function calling implemented
             raw_tools = params.pop("functions") if "functions" in params else None
             tools = _format_tools_to_vertex_tool(raw_tools) if raw_tools else None
-            response = chat.send_message(
-                message,
-                generation_config=params,
-                tools=tools,
-                safety_settings=safety_settings,
-            )
-            generations = [
-                ChatGeneration(
-                    message=_parse_response_candidate(c),
-                    generation_info=get_generation_info(c, self._is_gemini_model),
+            try:
+                response = chat.send_message(
+                    message,
+                    generation_config=params,
+                    tools=tools,
+                    safety_settings=safety_settings,
                 )
-                for c in response.candidates
-            ]
+            except ResponseBlockedError as e:
+                response = e.responses[0]
+            generations = []
+            for c in response.candidates:
+                if c.finish_reason in [
+                    gapic_content_types.Candidate.FinishReason.STOP,
+                    gapic_content_types.Candidate.FinishReason.FINISH_REASON_UNSPECIFIED,
+                ]:
+                    generations.append(
+                        ChatGeneration(
+                            message=_parse_response_candidate(c),
+                            generation_info=get_generation_info(
+                                c, self._is_gemini_model
+                            ),
+                        )
+                    )
+                else:
+                    error_str = "Text was found that violates the safety policy"
+                    if self.raise_on_blocked:
+                        raise ValueError(error_str)
+                    generations.append(
+                        ChatGeneration(message=AIMessage(content=error_str))
+                    )
         else:
             question = _get_question(messages)
             history = _parse_chat_history(messages[:-1])
@@ -423,6 +447,11 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
         Raises:
             ValueError: if the last message in the list is not from human.
         """
+        from google.cloud.aiplatform_v1beta1.types import (
+            content as gapic_content_types,
+        )
+        from vertexai.preview.generative_models import ResponseBlockedError
+
         if "stream" in kwargs:
             kwargs.pop("stream")
             logger.warning("ChatVertexAI does not currently support async streaming.")
@@ -444,19 +473,36 @@ class ChatVertexAI(_VertexAICommon, BaseChatModel):
             # set param to `functions` until core tool/function calling implemented
             raw_tools = params.pop("functions") if "functions" in params else None
             tools = _format_tools_to_vertex_tool(raw_tools) if raw_tools else None
-            response = await chat.send_message_async(
-                message,
-                generation_config=params,
-                tools=tools,
-                safety_settings=safety_settings,
-            )
-            generations = [
-                ChatGeneration(
-                    message=_parse_response_candidate(c),
-                    generation_info=get_generation_info(c, self._is_gemini_model),
+            try:
+                response = chat.send_message_async(
+                    message,
+                    generation_config=params,
+                    tools=tools,
+                    safety_settings=safety_settings,
                 )
-                for c in response.candidates
-            ]
+            except ResponseBlockedError as e:
+                response = e.responses[0]
+            generations = []
+            for c in response.candidates:
+                if c.finish_reason in [
+                    gapic_content_types.Candidate.FinishReason.STOP,
+                    gapic_content_types.Candidate.FinishReason.FINISH_REASON_UNSPECIFIED,
+                ]:
+                    generations.append(
+                        ChatGeneration(
+                            message=_parse_response_candidate(c),
+                            generation_info=get_generation_info(
+                                c, self._is_gemini_model
+                            ),
+                        )
+                    )
+                else:
+                    error_str = "Text was found that violates the safety policy"
+                    if self.raise_on_blocked:
+                        raise ValueError(error_str)
+                    generations.append(
+                        ChatGeneration(message=AIMessage(content=error_str))
+                    )
         else:
             question = _get_question(messages)
             history = _parse_chat_history(messages[:-1])
