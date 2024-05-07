@@ -1,4 +1,5 @@
 """Test logic on base chain class."""
+
 from typing import Any, Dict, List, Optional
 
 import pytest

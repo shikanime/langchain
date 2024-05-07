@@ -1,4 +1,5 @@
 """Module implements an agent that uses OpenAI's APIs function enabled API."""
+
 from typing import Any, List, Optional, Sequence, Tuple, Type, Union
 
 from langchain_core._api import deprecated
@@ -46,9 +47,9 @@ class OpenAIFunctionsAgent(BaseSingleActionAgent):
     llm: BaseLanguageModel
     tools: Sequence[BaseTool]
     prompt: BasePromptTemplate
-    output_parser: Type[
+    output_parser: Type[OpenAIFunctionsAgentOutputParser] = (
         OpenAIFunctionsAgentOutputParser
-    ] = OpenAIFunctionsAgentOutputParser
+    )
 
     def get_allowed_tools(self) -> List[str]:
         """Get allowed tools."""
